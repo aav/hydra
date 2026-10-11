@@ -28,7 +28,9 @@ enum MyMessage {
 struct MyApplication;
 
 impl Application for MyApplication {
-    async fn start(&self) -> Result<Pid, ExitReason> {
+    type State = ();
+
+    async fn start(&self) -> Result<(Pid, Self::State), ExitReason> {
         // Spawn two instances of `MyServer` with their own unique ids.
         let children = [
             MyServer::new().child_spec().id("server1"),
@@ -40,6 +42,7 @@ impl Application for MyApplication {
             .strategy(SupervisionStrategy::OneForOne)
             .start_link(SupervisorOptions::new())
             .await
+            .map(|pid| (pid, ()))
     }
 }
 

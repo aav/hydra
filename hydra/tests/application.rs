@@ -1,4 +1,6 @@
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use hydra::Application;
@@ -24,18 +26,20 @@ enum Behavior {
 struct TestApplication(Behavior);
 
 impl Application for TestApplication {
+    type State = ();
+
     fn config() -> ApplicationConfig {
         ApplicationConfig::new().with_graceful_shutdown_timeout(Duration::from_millis(100))
     }
 
-    async fn start(&self) -> Result<Pid, ExitReason> {
+    async fn start(&self) -> Result<(Pid, Self::State), ExitReason> {
         let behavior = self.0;
 
         if matches!(behavior, Behavior::FailStart) {
             return Err(ExitReason::from("failed"));
         }
 
-        Ok(Process::spawn_link(async move {
+        let pid = Process::spawn_link(async move {
             match behavior {
                 Behavior::Shutdown(status) => {
                     TestApplication::shutdown(status);
@@ -52,16 +56,106 @@ impl Application for TestApplication {
             loop {
                 Process::sleep(Duration::from_secs(1)).await;
             }
-        }))
+        });
+
+        Ok((pid, ()))
+    }
+}
+
+/// What a callback of the state application saw: its name, whether the linked process was alive, and the state.
+type Seen = (&'static str, bool, Vec<&'static str>);
+
+struct StateApplication {
+    behavior: Behavior,
+    seen: Arc<Mutex<Vec<Seen>>>,
+}
+
+impl StateApplication {
+    /// Runs the application with the given `behavior` and returns what the callbacks saw.
+    fn seen(behavior: Behavior) -> Vec<Seen> {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+
+        let _ = StateApplication {
+            behavior,
+            seen: seen.clone(),
+        }
+        .run();
+
+        seen.lock().unwrap().clone()
+    }
+}
+
+impl Application for StateApplication {
+    type State = (Pid, Vec<&'static str>);
+
+    fn config() -> ApplicationConfig {
+        ApplicationConfig::new()
+    }
+
+    async fn start(&self) -> Result<(Pid, Self::State), ExitReason> {
+        let behavior = self.behavior;
+
+        let pid = Process::spawn_link(async move {
+            if let Behavior::Shutdown(status) = behavior {
+                StateApplication::shutdown(status);
+
+                // Wait for the shutdown.
+                loop {
+                    Process::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        });
+
+        Ok((pid, (pid, vec!["start"])))
+    }
+
+    async fn prep_stop(&self, state: Self::State) -> Self::State {
+        let (pid, mut state) = state;
+
+        self.seen
+            .lock()
+            .unwrap()
+            .push(("prep_stop", Process::alive(pid), state.clone()));
+
+        state.push("prep_stop");
+
+        (pid, state)
+    }
+
+    async fn stop(&self, state: Self::State) {
+        let (pid, state) = state;
+
+        self.seen
+            .lock()
+            .unwrap()
+            .push(("stop", Process::alive(pid), state));
     }
 }
 
 // The scenarios run in one test, since there is only one running application to shut down.
 #[test]
-fn application_exit_codes() {
+fn application_works() {
     assert!(TestApplication(Behavior::FailStart).run() == ExitCode::FAILURE);
     assert!(TestApplication(Behavior::Exit).run() == ExitCode::FAILURE);
     assert!(TestApplication(Behavior::Shutdown(0)).run() == ExitCode::SUCCESS);
     assert!(TestApplication(Behavior::Shutdown(75)).run() == ExitCode::from(75));
     assert!(TestApplication(Behavior::ShutdownAndHang(75)).run() == ExitCode::from(75));
+
+    // A shutdown prepares to stop while the linked process is alive, then stops once it has exited.
+    assert!(
+        StateApplication::seen(Behavior::Shutdown(0))
+            == [
+                ("prep_stop", true, vec!["start"]),
+                ("stop", false, vec!["start", "prep_stop"]),
+            ]
+    );
+
+    // A linked process that exited on its own is gone before the application prepares to stop.
+    assert!(
+        StateApplication::seen(Behavior::Exit)
+            == [
+                ("prep_stop", false, vec!["start"]),
+                ("stop", false, vec!["start", "prep_stop"]),
+            ]
+    );
 }

@@ -2,9 +2,11 @@
 
 ### Added
 - `Application::shutdown` shuts down the running application with a status, from any process.
+- `Application::prep_stop` and `Application::stop` callbacks, called with the state returned from `start` before and after the application stops.
 
 ### Changed
 - `Application::run` now returns a `std::process::ExitCode` (Breaking).
+- `Application::start` now returns the application state along with the pid, the type is `Application::State` (Breaking).
 
 ### Fixed
 - A process is now registered before it runs, on a multi-threaded runtime it could start without its flags, name, or exit reason.

@@ -106,8 +106,10 @@ impl GenServer for Stack {
 struct StackApplication;
 
 impl Application for StackApplication {
+    type State = ();
+
     // Here, we must link a process for the application to monitor, usually, a Supervisor, but it can be any process.
-    async fn start(&self) -> Result<Pid, ExitReason> {
+    async fn start(&self) -> Result<(Pid, Self::State), ExitReason> {
         let pid = Stack::with_entries(vec!["hello", "world"])
             .start_link(GenServerOptions::new())
             .await
@@ -130,7 +132,7 @@ impl Application for StackApplication {
         // Otherwise, the application will run forever waiting for Stack to terminate.
         Stack::stop(pid, ExitReason::Normal, None).await?;
 
-        Ok(pid)
+        Ok((pid, ()))
     }
 }
 

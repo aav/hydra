@@ -35,15 +35,37 @@ static APPLICATION: Mutex<Option<Pid>> = Mutex::new(None);
 /// [Application] provides graceful shutdown by allowing you to link a process inside the call to `start`.
 /// The `run` call will only return once that process has terminated. It's recommended to link a supervisor.
 pub trait Application: Sized + Send + 'static {
+    /// The state that `start` returns, which is passed on to `prep_stop` and `stop`.
+    type State: Send + 'static;
+
     /// Override to change the application configuration defaults.
     fn config() -> ApplicationConfig {
         ApplicationConfig::default()
     }
 
-    /// Called when an application is starting. You should link a process here and return it's [Pid].
+    /// Called when an application is starting. You should link a process here and return it's [Pid]
+    /// along with the state of the application.
     ///
     /// The [Application] will wait for that process to exit before returning from `run`.
-    fn start(&self) -> impl Future<Output = Result<Pid, ExitReason>> + Send;
+    fn start(&self) -> impl Future<Output = Result<(Pid, Self::State), ExitReason>> + Send;
+
+    /// Called when an application is about to stop, before the linked process created in `start` is told to shut down.
+    ///
+    /// The returned state is passed on to `stop`. If the linked process exits on its own, this is called after it has exited.
+    ///
+    /// The graceful shutdown timeout starts once this returns.
+    fn prep_stop(&self, state: Self::State) -> impl Future<Output = Self::State> + Send {
+        async move { state }
+    }
+
+    /// Called when an application has stopped, after the linked process created in `start` has exited.
+    ///
+    /// This is called with the state returned from `prep_stop` whenever `start` was successful, it should do any cleanup required.
+    fn stop(&self, state: Self::State) -> impl Future<Output = ()> + Send {
+        async move {
+            let _ = state;
+        }
+    }
 
     /// Shuts down the running [Application] with the given `status`, this can be called from any process.
     ///
@@ -110,9 +132,11 @@ pub trait Application: Sized + Send + 'static {
                                         .expect("Failed to start console server!");
 
                 match self.start().await {
-                    Ok(pid) => {
+                    Ok((pid, state)) => {
                         #[cfg(feature = "tracing")]
                         tracing::info!(supervisor = ?pid, "Application supervisor has started");
+
+                        let mut state = state;
 
                         let spid = if config.graceful_shutdown {
                             Some(Process::spawn_link(signal_handler()))
@@ -141,6 +165,8 @@ pub trait Application: Sized + Send + 'static {
 
                                         code = Some(ExitCode::from(status));
 
+                                        state = self.prep_stop(state).await;
+
                                         Process::exit(pid, ExitReason::from("shutdown"));
                                         Process::send_after(Process::current(), ShutdownTimeout, config.graceful_shutdown_timeout);
                                     }
@@ -162,6 +188,8 @@ pub trait Application: Sized + Send + 'static {
                                         code = Some(ExitCode::SUCCESS);
                                         signaled = true;
 
+                                        state = self.prep_stop(state).await;
+
                                         Process::exit(pid, ExitReason::from("shutdown"));
                                         Process::send_after(Process::current(), ShutdownTimeout, config.graceful_shutdown_timeout);
                                     }
@@ -177,6 +205,13 @@ pub trait Application: Sized + Send + 'static {
                                 _ => continue,
                             }
                         }
+
+                        // The supervisor exited on its own, so the application wasn't prepared to stop yet.
+                        if code.is_none() {
+                            state = self.prep_stop(state).await;
+                        }
+
+                        self.stop(state).await;
                     }
                     Err(reason) => {
                         #[cfg(feature = "tracing")]
@@ -215,19 +250,26 @@ pub trait Application: Sized + Send + 'static {
                 Process::set_flags(ProcessFlags::TRAP_EXIT);
 
                 match self.start().await {
-                    Ok(pid) => loop {
-                        let message = Process::receive::<()>().await;
+                    Ok((pid, state)) => {
+                        let reason = loop {
+                            let message = Process::receive::<()>().await;
 
-                        match message {
-                            Message::System(SystemMessage::Exit(epid, ereason)) => {
-                                if epid == pid {
-                                    tx.send(Some(ereason)).unwrap();
-                                    break;
+                            match message {
+                                Message::System(SystemMessage::Exit(epid, ereason)) => {
+                                    if epid == pid {
+                                        break ereason;
+                                    }
                                 }
+                                _ => continue,
                             }
-                            _ => continue,
-                        }
-                    },
+                        };
+
+                        let state = self.prep_stop(state).await;
+
+                        self.stop(state).await;
+
+                        tx.send(Some(reason)).unwrap();
+                    }
                     Err(reason) => {
                         tx.send(Some(reason)).unwrap();
                     }

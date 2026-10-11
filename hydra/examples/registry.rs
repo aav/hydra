@@ -56,7 +56,9 @@ enum MyMessage {
 struct MyApplication;
 
 impl Application for MyApplication {
-    async fn start(&self) -> Result<Pid, ExitReason> {
+    type State = ();
+
+    async fn start(&self) -> Result<(Pid, Self::State), ExitReason> {
         // Spawn a registry that will take care of registering 'MySpace'.
         let children = [
             Registry::new("space-registry")
@@ -79,6 +81,7 @@ impl Application for MyApplication {
             .strategy(SupervisionStrategy::OneForOne)
             .start_link(SupervisorOptions::new())
             .await
+            .map(|pid| (pid, ()))
     }
 }
 

@@ -52,13 +52,16 @@ impl WebsocketHandler for MyWebsocketHandler {
 struct MyWebsocketApplication;
 
 impl Application for MyWebsocketApplication {
-    async fn start(&self) -> Result<Pid, ExitReason> {
+    type State = ();
+
+    async fn start(&self) -> Result<(Pid, Self::State), ExitReason> {
         let address: SocketAddr = "127.0.0.1:1337".parse().unwrap();
         let config = WebsocketServerConfig::new(address);
 
         WebsocketServer::<MyWebsocketHandler>::new(config)
             .start_link(GenServerOptions::new())
             .await
+            .map(|pid| (pid, ()))
     }
 }
 
