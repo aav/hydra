@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::process::ExitCode;
 
 use hydra::Application;
 use hydra::ExitReason;
@@ -61,6 +62,6 @@ impl Application for MyWebsocketApplication {
     }
 }
 
-fn main() {
+fn main() -> ExitCode {
     Application::run(MyWebsocketApplication)
 }

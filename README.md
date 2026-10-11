@@ -136,7 +136,9 @@ impl Application for StackApplication {
 
 fn main() {
     // This method will return once the linked Process in StackApplication::start has terminated.
-    Application::run(StackApplication)
+    //
+    // It returns an exit code for `main`, which is a failure here as nothing asked the application to shut down.
+    Application::run(StackApplication);
 }
 ```
 

@@ -1,8 +1,10 @@
 # Unreleased
 
 ### Added
+- `Application::shutdown` shuts down the running application with a status, from any process.
 
 ### Changed
+- `Application::run` now returns a `std::process::ExitCode` (Breaking).
 
 ### Fixed
 - A process is now registered before it runs, on a multi-threaded runtime it could start without its flags, name, or exit reason.

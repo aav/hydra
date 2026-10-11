@@ -1,3 +1,4 @@
+use std::process::ExitCode;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -117,7 +118,7 @@ impl GenServer for MyServer {
     }
 }
 
-fn main() {
+fn main() -> ExitCode {
     // This method will only return once the supervisor linked in `start` has terminated.
     Application::run(MyApplication)
 }

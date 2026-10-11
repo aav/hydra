@@ -1,4 +1,6 @@
 use std::future::Future;
+use std::process::ExitCode;
+use std::sync::Mutex;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -22,7 +24,11 @@ use crate::ConsoleServer;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 enum ApplicationMessage {
     ShutdownTimeout,
+    Shutdown(u8),
 }
+
+/// The process of the running [Application] if there is one.
+static APPLICATION: Mutex<Option<Pid>> = Mutex::new(None);
 
 /// Main application logic and entry point for a hydra program.
 ///
@@ -39,10 +45,25 @@ pub trait Application: Sized + Send + 'static {
     /// The [Application] will wait for that process to exit before returning from `run`.
     fn start(&self) -> impl Future<Output = Result<Pid, ExitReason>> + Send;
 
+    /// Shuts down the running [Application] with the given `status`, this can be called from any process.
+    ///
+    /// This begins the same graceful shutdown as a shutdown signal and `run` returns `status` once
+    /// the linked process created in `start` has exited. Only the first shutdown, or shutdown signal counts.
+    fn shutdown(status: u8) {
+        if let Some(pid) = *APPLICATION.lock().unwrap() {
+            Process::send(pid, ApplicationMessage::Shutdown(status));
+        }
+    }
+
     /// Runs the [Application] to completion.
     ///
     /// This method will return when the linked process created in `start` has exited.
-    fn run(self) {
+    ///
+    /// The returned [ExitCode] is:
+    /// - The status given to `shutdown`, even if the graceful shutdown timed out.
+    /// - Success, if a shutdown signal began the shutdown, or failure if that shutdown timed out.
+    /// - Failure, if the linked process exited on its own, regardless of the reason, or if `start` failed.
+    fn run(self) -> ExitCode {
         use ApplicationMessage::*;
 
         let config = Self::config();
@@ -70,11 +91,17 @@ pub trait Application: Sized + Send + 'static {
 
         let rt = Runtime::new().unwrap();
 
-        rt.block_on(async move {
+        let code = rt.block_on(async move {
             let (tx, rx) = oneshot::channel();
 
             Process::spawn(async move {
                 Process::set_flags(ProcessFlags::TRAP_EXIT);
+
+                *APPLICATION.lock().unwrap() = Some(Process::current());
+
+                // The exit code of the shutdown, or shutdown signal that began the shutdown.
+                let mut code: Option<ExitCode> = None;
+                let mut signaled = false;
 
                 #[cfg(feature="console")]
                 let mut cpid = ConsoleServer::new()
@@ -101,7 +128,22 @@ pub trait Application: Sized + Send + 'static {
                                     #[cfg(feature = "tracing")]
                                     tracing::error!(timeout = ?config.graceful_shutdown_timeout, "Application failed to shutdown gracefully");
 
+                                    if signaled {
+                                        code = Some(ExitCode::FAILURE);
+                                    }
+
                                     Process::exit(pid, ExitReason::Kill);
+                                }
+                                Message::User(Shutdown(status)) => {
+                                    if code.is_none() {
+                                        #[cfg(feature = "tracing")]
+                                        tracing::info!(status = ?status, supervisor = ?pid, timeout = ?config.graceful_shutdown_timeout, "Application starting graceful shutdown");
+
+                                        code = Some(ExitCode::from(status));
+
+                                        Process::exit(pid, ExitReason::from("shutdown"));
+                                        Process::send_after(Process::current(), ShutdownTimeout, config.graceful_shutdown_timeout);
+                                    }
                                 }
                                 Message::System(SystemMessage::Exit(epid, ereason)) => {
                                     if epid == pid {
@@ -113,9 +155,12 @@ pub trait Application: Sized + Send + 'static {
                                             tracing::info!(reason = ?ereason, supervisor = ?pid, "Application supervisor has exited");
                                         }
                                         break;
-                                    } else if spid.is_some_and(|spid| spid == epid) {
+                                    } else if spid.is_some_and(|spid| spid == epid) && code.is_none() {
                                         #[cfg(feature = "tracing")]
                                         tracing::info!(reason = ?ereason, supervisor = ?pid, timeout = ?config.graceful_shutdown_timeout, "Application starting graceful shutdown");
+
+                                        code = Some(ExitCode::SUCCESS);
+                                        signaled = true;
 
                                         Process::exit(pid, ExitReason::from("shutdown"));
                                         Process::send_after(Process::current(), ShutdownTimeout, config.graceful_shutdown_timeout);
@@ -142,15 +187,19 @@ pub trait Application: Sized + Send + 'static {
                     }
                 }
 
-                tx.send(()).unwrap();
+                APPLICATION.lock().unwrap().take();
+
+                tx.send(code.unwrap_or(ExitCode::FAILURE)).unwrap();
             });
 
-            let _ = rx.await;
+            rx.await.unwrap_or(ExitCode::FAILURE)
         });
 
         if let Some(prev_hook) = prev_hook {
             std::panic::set_hook(prev_hook);
         }
+
+        code
     }
 
     /// Runs the [Application] to completion for tests.
