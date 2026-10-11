@@ -10,6 +10,8 @@ use std::time::Duration;
 use flume::Receiver;
 use flume::Sender;
 
+use tokio::sync::oneshot;
+
 use crate::ArgumentError;
 use crate::AsyncCatchUnwind;
 use crate::Dest;
@@ -174,7 +176,12 @@ impl Process {
 
         let reference = Reference::new();
 
+        let (registered_tx, registered_rx) = oneshot::channel::<()>();
+
         let handle = tokio::spawn(async move {
+            // Wait for the registration, otherwise the timer could be destroyed before it exists.
+            let _ = registered_rx.await;
+
             Process::sleep(duration).await;
             Process::send(dest, message);
 
@@ -182,6 +189,9 @@ impl Process {
         });
 
         process_register_timer(reference, duration, handle);
+
+        // The timer is registered and can now run.
+        let _ = registered_tx.send(());
 
         reference
     }
@@ -481,8 +491,13 @@ where
         result = SpawnResult::PidMonitor(pid, monitor);
     }
 
+    let (registered_tx, registered_rx) = oneshot::channel::<()>();
+
     // Spawn the process with the newly created process object in scope.
     let handle = tokio::spawn(PROCESS.scope(process, async move {
+        // Wait for the registration, another thread may run this task before `spawn` has returned.
+        let _ = registered_rx.await;
+
         if let Err(e) = AsyncCatchUnwind::new(AssertUnwindSafe(function)).await {
             process_set_exit_reason(Process::current(), e.into());
         }
@@ -490,6 +505,9 @@ where
 
     // Register the process under it's new id.
     process_insert(next_id, ProcessRegistration::new(handle, tx));
+
+    // The process is registered and can now run.
+    let _ = registered_tx.send(());
 
     result
 }

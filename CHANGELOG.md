@@ -5,6 +5,8 @@
 ### Changed
 
 ### Fixed
+- A process is now registered before it runs, on a multi-threaded runtime it could start without its flags, name, or exit reason.
+- A timer is now registered before it runs.
 
 # 0.1.40
 
