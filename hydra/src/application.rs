@@ -85,6 +85,8 @@ pub trait Application: Sized + Send + 'static {
     /// - The status given to `shutdown`, even if the graceful shutdown timed out.
     /// - Success, if a shutdown signal began the shutdown, or failure if that shutdown timed out.
     /// - Failure, if the linked process exited on its own, regardless of the reason, or if `start` failed.
+    ///
+    /// A shutdown signal that arrives while `start` runs is kept, the shutdown begins once `start` has returned.
     fn run(self) -> ExitCode {
         use ApplicationMessage::*;
 
@@ -131,6 +133,9 @@ pub trait Application: Sized + Send + 'static {
                                         .await
                                         .expect("Failed to start console server!");
 
+                // Listen before the start, so a shutdown signal that arrives while starting is kept.
+                let signals = config.graceful_shutdown.then(ShutdownSignals::new);
+
                 match self.start().await {
                     Ok((pid, state)) => {
                         #[cfg(feature = "tracing")]
@@ -138,11 +143,7 @@ pub trait Application: Sized + Send + 'static {
 
                         let mut state = state;
 
-                        let spid = if config.graceful_shutdown {
-                            Some(Process::spawn_link(signal_handler()))
-                        } else {
-                            None
-                        };
+                        let spid = signals.map(|signals| Process::spawn_link(signals.handle()));
 
                         loop {
                             let message = Process::receive::<ApplicationMessage>().await;
@@ -286,30 +287,56 @@ pub trait Application: Sized + Send + 'static {
     }
 }
 
-/// Handles SIGTERM and ctrl+c signals on unix-like platforms.
+/// Listens for SIGTERM and ctrl+c signals on unix-like platforms, from the moment it is created.
 #[cfg(unix)]
-async fn signal_handler() {
-    use tokio::signal::unix;
+struct ShutdownSignals {
+    sigterm: tokio::signal::unix::Signal,
+    sigint: tokio::signal::unix::Signal,
+}
 
-    let mut sigterm =
-        unix::signal(unix::SignalKind::terminate()).expect("Failed to register SIGTERM handler");
+#[cfg(unix)]
+impl ShutdownSignals {
+    /// Registers the signal handlers, a signal that arrives from now on is kept until it is handled.
+    fn new() -> Self {
+        use tokio::signal::unix;
 
-    tokio::select! {
-        _ = sigterm.recv() => {
-            Process::exit(Process::current(), ExitReason::from("sigterm"));
+        Self {
+            sigterm: unix::signal(unix::SignalKind::terminate())
+                .expect("Failed to register SIGTERM handler"),
+            sigint: unix::signal(unix::SignalKind::interrupt())
+                .expect("Failed to register SIGINT handler"),
         }
-        _ = tokio::signal::ctrl_c() => {
-            Process::exit(Process::current(), ExitReason::from("ctrl_c"));
+    }
+
+    /// Exits the current process once a signal has arrived.
+    async fn handle(mut self) {
+        tokio::select! {
+            _ = self.sigterm.recv() => {
+                Process::exit(Process::current(), ExitReason::from("sigterm"));
+            }
+            _ = self.sigint.recv() => {
+                Process::exit(Process::current(), ExitReason::from("ctrl_c"));
+            }
         }
     }
 }
 
-/// Handles ctrl+c signals on non-unix-like platforms.
+/// Listens for ctrl+c signals on non-unix-like platforms, once it is handled.
 #[cfg(not(unix))]
-async fn signal_handler() {
-    let _ = tokio::signal::ctrl_c().await;
+struct ShutdownSignals;
 
-    Process::exit(Process::current(), ExitReason::from("ctrl_c"));
+#[cfg(not(unix))]
+impl ShutdownSignals {
+    fn new() -> Self {
+        Self
+    }
+
+    /// Exits the current process once a signal has arrived.
+    async fn handle(self) {
+        let _ = tokio::signal::ctrl_c().await;
+
+        Process::exit(Process::current(), ExitReason::from("ctrl_c"));
+    }
 }
 
 /// Handles forwarding panic messages through tracing when enabled.

@@ -12,6 +12,7 @@
 - `Application::start` now returns the application state along with the pid, the type is `Application::State` (Breaking).
 
 ### Fixed
+- `Application::run` now listens for shutdown signals before it calls `start`, a signal that arrived while starting killed the program without `stop`.
 - A process is now registered before it runs, on a multi-threaded runtime it could start without its flags, name, or exit reason.
 - A timer is now registered before it runs.
 

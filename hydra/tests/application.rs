@@ -21,6 +21,18 @@ enum Behavior {
     Shutdown(u8),
     /// Shuts down the application with a status, then ignores the shutdown.
     ShutdownAndHang(u8),
+    /// Gets a SIGTERM while it starts, then waits for the shutdown.
+    SignalWhileStarting,
+}
+
+/// Sends a SIGTERM to this program, and returns once it was sent.
+fn sigterm() {
+    let sent = std::process::Command::new("kill")
+        .args(["-TERM", &std::process::id().to_string()])
+        .status()
+        .expect("Failed to run kill!");
+
+    assert!(sent.success());
 }
 
 struct TestApplication(Behavior);
@@ -29,7 +41,9 @@ impl Application for TestApplication {
     type State = ();
 
     fn config() -> ApplicationConfig {
-        ApplicationConfig::new().with_graceful_shutdown_timeout(Duration::from_millis(100))
+        ApplicationConfig::new()
+            .with_graceful_shutdown(true)
+            .with_graceful_shutdown_timeout(Duration::from_millis(100))
     }
 
     async fn start(&self) -> Result<(Pid, Self::State), ExitReason> {
@@ -39,8 +53,13 @@ impl Application for TestApplication {
             return Err(ExitReason::from("failed"));
         }
 
+        if matches!(behavior, Behavior::SignalWhileStarting) {
+            sigterm();
+        }
+
         let pid = Process::spawn_link(async move {
             match behavior {
+                Behavior::SignalWhileStarting => {}
                 Behavior::Shutdown(status) => {
                     TestApplication::shutdown(status);
                 }
@@ -89,16 +108,22 @@ impl Application for StateApplication {
     type State = (Pid, Vec<&'static str>);
 
     fn config() -> ApplicationConfig {
-        ApplicationConfig::new()
+        ApplicationConfig::new().with_graceful_shutdown(true)
     }
 
     async fn start(&self) -> Result<(Pid, Self::State), ExitReason> {
         let behavior = self.behavior;
 
+        if matches!(behavior, Behavior::SignalWhileStarting) {
+            sigterm();
+        }
+
         let pid = Process::spawn_link(async move {
             if let Behavior::Shutdown(status) = behavior {
                 StateApplication::shutdown(status);
+            }
 
+            if !matches!(behavior, Behavior::Exit) {
                 // Wait for the shutdown.
                 loop {
                     Process::sleep(Duration::from_secs(1)).await;
@@ -144,6 +169,16 @@ fn application_works() {
     // A shutdown prepares to stop while the linked process is alive, then stops once it has exited.
     assert!(
         StateApplication::seen(Behavior::Shutdown(0))
+            == [
+                ("prep_stop", true, vec!["start"]),
+                ("stop", false, vec!["start", "prep_stop"]),
+            ]
+    );
+
+    // A signal that arrives while starting is kept, and begins the shutdown once the start has returned.
+    assert!(TestApplication(Behavior::SignalWhileStarting).run() == ExitCode::SUCCESS);
+    assert!(
+        StateApplication::seen(Behavior::SignalWhileStarting)
             == [
                 ("prep_stop", true, vec!["start"]),
                 ("stop", false, vec!["start", "prep_stop"]),
