@@ -23,6 +23,7 @@ use crate::Restart;
 use crate::Shutdown;
 use crate::SupervisorOptions;
 use crate::SystemMessage;
+use crate::gen_server::call_with_timeout;
 use crate::shutdown_brutal_kill;
 use crate::shutdown_infinity;
 use crate::shutdown_timeout;
@@ -223,12 +224,14 @@ impl Supervisor {
     }
 
     /// Returns [SupervisorCounts] containing the counts for each of the different child specifications.
+    ///
+    /// This waits for the supervisor without a timeout, as do the other calls to a supervisor.
     pub async fn count_children<T: Into<Dest>>(
         supervisor: T,
     ) -> Result<SupervisorCounts, SupervisorError> {
         use SupervisorMessage::*;
 
-        match Supervisor::call(supervisor, CountChildren, None).await? {
+        match call(supervisor.into(), CountChildren).await? {
             CountChildrenSuccess(counts) => Ok(counts),
             _ => unreachable!(),
         }
@@ -241,7 +244,7 @@ impl Supervisor {
     ) -> Result<Option<Pid>, SupervisorError> {
         use SupervisorMessage::*;
 
-        match Supervisor::call(supervisor, StartChild(Local::new(child)), None).await? {
+        match call(supervisor.into(), StartChild(Local::new(child))).await? {
             StartChildSuccess(pid) => Ok(pid),
             StartChildError(error) => Err(error),
             _ => unreachable!(),
@@ -261,7 +264,7 @@ impl Supervisor {
     ) -> Result<(), SupervisorError> {
         use SupervisorMessage::*;
 
-        match Supervisor::call(supervisor, TerminateChild(child_id.into()), None).await? {
+        match call(supervisor.into(), TerminateChild(child_id.into())).await? {
             TerminateChildSuccess => Ok(()),
             TerminateChildError(error) => Err(error),
             _ => unreachable!(),
@@ -280,7 +283,7 @@ impl Supervisor {
     ) -> Result<Option<Pid>, SupervisorError> {
         use SupervisorMessage::*;
 
-        match Supervisor::call(supervisor, RestartChild(child_id.into()), None).await? {
+        match call(supervisor.into(), RestartChild(child_id.into())).await? {
             RestartChildSuccess(pid) => Ok(pid),
             RestartChildError(error) => Err(error),
             _ => unreachable!(),
@@ -296,7 +299,7 @@ impl Supervisor {
     ) -> Result<(), SupervisorError> {
         use SupervisorMessage::*;
 
-        match Supervisor::call(supervisor, DeleteChild(child_id.into()), None).await? {
+        match call(supervisor.into(), DeleteChild(child_id.into())).await? {
             DeleteChildSuccess => Ok(()),
             DeleteChildError(error) => Err(error),
             _ => unreachable!(),
@@ -309,7 +312,7 @@ impl Supervisor {
     ) -> Result<Vec<SupervisorChildInfo>, SupervisorError> {
         use SupervisorMessage::*;
 
-        match Supervisor::call(supervisor, WhichChildren, None).await? {
+        match call(supervisor.into(), WhichChildren).await? {
             WhichChildrenSuccess(info) => Ok(info),
             _ => unreachable!(),
         }
@@ -955,6 +958,16 @@ impl std::convert::From<CallError> for SupervisorError {
     fn from(value: CallError) -> Self {
         Self::CallError(value)
     }
+}
+
+/// Makes a call to the given `supervisor`, and waits for the reply without a limit.
+///
+/// A supervisor replies once it's done, which takes as long as the start or the shutdown of a child does.
+async fn call(
+    supervisor: Dest,
+    message: SupervisorMessage,
+) -> Result<SupervisorMessage, CallError> {
+    call_with_timeout::<Supervisor>(supervisor, message, None).await
 }
 
 /// Terminates the given `pid` using the given `shutdown` method.

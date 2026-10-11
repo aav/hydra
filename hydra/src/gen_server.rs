@@ -215,60 +215,11 @@ pub trait GenServer: Sized + Send + 'static {
         message: Self::Message,
         timeout: Option<Duration>,
     ) -> impl Future<Output = Result<Self::Message, CallError>> + Send {
-        let server = server.into();
-
-        async move {
-            let monitor = if server.is_local() {
-                Process::monitor(server.clone())
-            } else {
-                Process::monitor_alias(server.clone(), true)
-            };
-
-            let from = From::new(Process::current(), monitor, server.is_remote());
-
-            Process::send(server, GenServerMessage::Call(from, message));
-
-            let receiver = Process::receiver()
-                .for_message::<GenServerMessage<Self::Message>>()
-                .select(|message| {
-                    match message {
-                        Message::User(GenServerMessage::CallReply(tag, _)) => {
-                            // Make sure the tag matches the monitor.
-                            *tag == monitor
-                        }
-                        Message::System(SystemMessage::ProcessDown(_, tag, _)) => {
-                            // Make sure the tag matches the monitor.
-                            *tag == monitor
-                        }
-                        _ => false,
-                    }
-                });
-
-            let result =
-                Process::timeout(timeout.unwrap_or(Duration::from_millis(5000)), receiver).await;
-
-            match result {
-                Ok(Message::User(GenServerMessage::CallReply(_, message))) => {
-                    Process::demonitor(monitor);
-
-                    Ok(message)
-                }
-                Ok(Message::System(SystemMessage::ProcessDown(_, _, reason))) => {
-                    Err(CallError::ServerDown(reason))
-                }
-                Err(timeout) => {
-                    Process::demonitor(monitor);
-
-                    // Drop a stale reply that may already be in the process message inbox.
-                    Process::receiver()
-                        .for_message::<GenServerMessage<Self::Message>>()
-                        .remove(|message| matches!(message, Message::User(GenServerMessage::CallReply(tag, _)) if *tag == monitor));
-
-                    Err(CallError::Timeout(timeout))
-                }
-                _ => unreachable!(),
-            }
-        }
+        call_with_timeout::<Self>(
+            server.into(),
+            message,
+            Some(timeout.unwrap_or(Duration::from_millis(5000))),
+        )
     }
 
     /// Replies to a client.
@@ -343,6 +294,66 @@ pub trait GenServer: Sized + Send + 'static {
 
             unimplemented!();
         }
+    }
+}
+
+/// Internal [GenServer] call routine, a `timeout` of [None] waits for the reply without a limit.
+pub(crate) async fn call_with_timeout<T: GenServer>(
+    server: Dest,
+    message: T::Message,
+    timeout: Option<Duration>,
+) -> Result<T::Message, CallError> {
+    let monitor = if server.is_local() {
+        Process::monitor(server.clone())
+    } else {
+        Process::monitor_alias(server.clone(), true)
+    };
+
+    let from = From::new(Process::current(), monitor, server.is_remote());
+
+    Process::send(server, GenServerMessage::Call(from, message));
+
+    let receiver = Process::receiver()
+        .for_message::<GenServerMessage<T::Message>>()
+        .select(|message| {
+            match message {
+                Message::User(GenServerMessage::CallReply(tag, _)) => {
+                    // Make sure the tag matches the monitor.
+                    *tag == monitor
+                }
+                Message::System(SystemMessage::ProcessDown(_, tag, _)) => {
+                    // Make sure the tag matches the monitor.
+                    *tag == monitor
+                }
+                _ => false,
+            }
+        });
+
+    let result = match timeout {
+        Some(duration) => Process::timeout(duration, receiver).await,
+        None => Ok(receiver.await),
+    };
+
+    match result {
+        Ok(Message::User(GenServerMessage::CallReply(_, message))) => {
+            Process::demonitor(monitor);
+
+            Ok(message)
+        }
+        Ok(Message::System(SystemMessage::ProcessDown(_, _, reason))) => {
+            Err(CallError::ServerDown(reason))
+        }
+        Err(timeout) => {
+            Process::demonitor(monitor);
+
+            // Drop a stale reply that may already be in the process message inbox.
+            Process::receiver()
+                .for_message::<GenServerMessage<T::Message>>()
+                .remove(|message| matches!(message, Message::User(GenServerMessage::CallReply(tag, _)) if *tag == monitor));
+
+            Err(CallError::Timeout(timeout))
+        }
+        _ => unreachable!(),
     }
 }
 
