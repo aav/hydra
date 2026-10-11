@@ -82,13 +82,13 @@ pub enum SupervisorError {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SupervisorChildInfo {
     /// The id as defined in the child specification.
-    id: String,
+    pub id: String,
     /// The [Pid] of the corrosponding child process if it exists.
-    child: Option<Pid>,
+    pub child: Option<Pid>,
     /// The type of child as defined in the child specification.
-    child_type: ChildType,
+    pub child_type: ChildType,
     /// Whether or not the process is about to be restarted.
-    restarting: bool,
+    pub restarting: bool,
 }
 
 /// Contains the counts of all of the supervised children.

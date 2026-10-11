@@ -5,6 +5,7 @@
 - `Application::prep_stop` and `Application::stop` callbacks, called with the state returned from `start` before and after the application stops.
 
 ### Changed
+- The fields of `SupervisorChildInfo` are now public, so the result of `Supervisor::which_children` can be read.
 - `Application::run` now returns a `std::process::ExitCode` (Breaking).
 - `Application::start` now returns the application state along with the pid, the type is `Application::State` (Breaking).
 
