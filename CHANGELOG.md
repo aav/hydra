@@ -1,6 +1,7 @@
 # Unreleased
 
 ### Added
+- `Supervisor::concurrent_shutdown` terminates the children at the same time when the supervisor itself terminates.
 - `Application::shutdown` shuts down the running application with a status, from any process.
 - `Application::prep_stop` and `Application::stop` callbacks, called with the state returned from `start` before and after the application stops.
 

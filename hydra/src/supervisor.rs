@@ -26,7 +26,9 @@ use crate::SystemMessage;
 use crate::gen_server::call_with_timeout;
 use crate::shutdown_brutal_kill;
 use crate::shutdown_infinity;
+use crate::shutdown_signal;
 use crate::shutdown_timeout;
+use crate::shutdown_wait;
 
 /// A supervision child.
 #[derive(Clone)]
@@ -126,6 +128,7 @@ pub struct Supervisor {
     restarts: Vec<Instant>,
     strategy: SupervisionStrategy,
     auto_shutdown: AutoShutdown,
+    concurrent_shutdown: bool,
     max_restarts: usize,
     max_duration: Duration,
 }
@@ -139,6 +142,7 @@ impl Supervisor {
             restarts: Vec::new(),
             strategy: SupervisionStrategy::OneForOne,
             auto_shutdown: AutoShutdown::Never,
+            concurrent_shutdown: false,
             max_restarts: 3,
             max_duration: Duration::from_secs(5),
         }
@@ -188,6 +192,18 @@ impl Supervisor {
     /// Sets the behavior to use when a significant process exits.
     pub const fn auto_shutdown(mut self, auto_shutdown: AutoShutdown) -> Self {
         self.auto_shutdown = auto_shutdown;
+        self
+    }
+
+    /// Sets whether or not the children are terminated at the same time when the [Supervisor] itself terminates.
+    ///
+    /// Every child is signaled first, in reverse start order, then the supervisor waits for all of them.
+    /// Each child still gets its own [Shutdown], and a timeout counts from the signal.
+    /// A strategy that restarts several children still terminates them one after another.
+    ///
+    /// Defaults to `false`, the children are terminated one after another in reverse start order.
+    pub const fn concurrent_shutdown(mut self, concurrent_shutdown: bool) -> Self {
+        self.concurrent_shutdown = concurrent_shutdown;
         self
     }
 
@@ -433,6 +449,36 @@ impl Supervisor {
     async fn terminate_children(&mut self) {
         let mut remove: Vec<usize> = Vec::new();
 
+        if self.concurrent_shutdown {
+            // Signal every child before waiting for the first one.
+            let signaled = Instant::now();
+            let mut waiting: Vec<(Pid, Shutdown, crate::Reference)> = Vec::new();
+
+            for child in self.children.iter().rev() {
+                if let Some(pid) = child.pid {
+                    let monitor = Process::monitor(pid);
+
+                    shutdown_signal(pid, child.shutdown());
+                    waiting.push((pid, child.shutdown(), monitor));
+                }
+            }
+
+            for (pid, shutdown, monitor) in waiting {
+                let timeout = match shutdown {
+                    Shutdown::BrutalKill | Shutdown::Infinity => None,
+                    Shutdown::Duration(timeout) => Some(timeout.saturating_sub(signaled.elapsed())),
+                };
+
+                if let Err(reason) = shutdown_wait(pid, monitor, timeout).await {
+                    #[cfg(feature = "tracing")]
+                    tracing::error!(reason = ?reason, child_pid = ?pid, "Shutdown error");
+
+                    #[cfg(not(feature = "tracing"))]
+                    let _ = reason;
+                }
+            }
+        }
+
         for (index, child) in self.children.iter_mut().enumerate().rev() {
             if child.is_temporary() {
                 remove.push(index);
@@ -441,6 +487,10 @@ impl Supervisor {
             let Some(pid) = child.pid.take() else {
                 continue;
             };
+
+            if self.concurrent_shutdown {
+                continue;
+            }
 
             if let Err(reason) = shutdown(pid, child.shutdown()).await {
                 #[cfg(feature = "tracing")]

@@ -105,6 +105,43 @@ pub(crate) async fn shutdown_infinity(pid: Pid, monitor: Reference) -> Result<()
     Ok(())
 }
 
+/// Signals the given `pid` to terminate using the given `shutdown` method, without waiting for it.
+pub(crate) fn shutdown_signal(pid: Pid, shutdown: Shutdown) {
+    match shutdown {
+        Shutdown::BrutalKill => Process::exit(pid, ExitReason::Kill),
+        Shutdown::Duration(_) | Shutdown::Infinity => {
+            Process::exit(pid, ExitReason::from("shutdown"))
+        }
+    }
+}
+
+/// Waits for the `monitor` of a `pid` that was already signaled to fire,
+/// then forcefully kills it if `timeout` is given and elapses first.
+pub(crate) async fn shutdown_wait(
+    pid: Pid,
+    monitor: Reference,
+    timeout: Option<Duration>,
+) -> Result<(), ExitReason> {
+    let receiver = Process::receiver()
+        .for_message::<()>()
+        .select(|message| matches!(message, Message::System(SystemMessage::ProcessDown(_, tag, _)) if *tag == monitor));
+
+    let result = match timeout {
+        Some(timeout) => Process::timeout(timeout, receiver).await,
+        None => Ok(receiver.await),
+    };
+
+    match result {
+        Ok(Message::System(SystemMessage::ProcessDown(_, _, reason))) => {
+            unlink_flush(pid, reason);
+
+            Ok(())
+        }
+        Ok(_) => unreachable!(),
+        Err(_) => shutdown_brutal_kill(pid, monitor).await,
+    }
+}
+
 /// Unlinks the given process and ensures that any pending exit signal is flushed from the message queue.
 ///
 /// Returns the real [ExitReason] or the `default_reason` if no signal was found.
