@@ -1,4 +1,6 @@
-# Unreleased
+# 0.1.40-aav.1 - 2026-10-16
+
+The carvers' fork, published to the forge registry.
 
 ### Added
 - `Supervisor::concurrent_shutdown` terminates the children at the same time when the supervisor itself terminates.
@@ -6,6 +8,7 @@
 - `Application::prep_stop` and `Application::stop` callbacks, called with the state returned from `start` before and after the application stops.
 
 ### Changed
+- `ChildSpec::start` and `Registry::with_start` no longer require the start future to be `Sync`, only `Send`: a child that holds a stream which is not `Sync` while it starts can start.
 - `Supervisor::start_child`, `terminate_child`, `restart_child`, `delete_child`, `which_children`, and `count_children` now wait for the supervisor without a timeout, they gave up after 5 seconds while the supervisor carried on.
 - The fields of `SupervisorChildInfo` are now public, so the result of `Supervisor::which_children` can be read.
 - `Application::run` now returns a `std::process::ExitCode` (Breaking).

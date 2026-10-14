@@ -1,7 +1,8 @@
 [package]
 name = "hydra-macros"
-version = "0.1.40"
+version = "0.1.40-aav.1"
 edition = "2024"
+publish = ["forge"]
 license.workspace = true
 repository.workspace = true
 categories.workspace = true

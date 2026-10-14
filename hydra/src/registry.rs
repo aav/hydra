@@ -100,7 +100,7 @@ pub struct Registry {
     #[allow(clippy::type_complexity)]
     start: Option<
         Arc<
-            dyn Fn(RegistryKey) -> Box<dyn Future<Output = Result<Pid, ExitReason>> + Send + Sync>
+            dyn Fn(RegistryKey) -> Box<dyn Future<Output = Result<Pid, ExitReason>> + Send>
                 + Send
                 + Sync,
         >,
@@ -130,7 +130,7 @@ impl Registry {
     pub fn with_start<T, F>(mut self, start: T) -> Self
     where
         T: Fn(RegistryKey) -> F + Send + Sync + 'static,
-        F: Future<Output = Result<Pid, ExitReason>> + Send + Sync + 'static,
+        F: Future<Output = Result<Pid, ExitReason>> + Send + 'static,
     {
         self.start = Some(Arc::new(move |key| Box::new(start(key))));
         self

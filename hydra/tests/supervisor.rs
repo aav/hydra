@@ -162,3 +162,63 @@ async fn concurrent_shutdown_terminates_children_at_the_same_time() {
     assert!(elapsed >= Duration::from_secs(1), "{elapsed:?}");
     assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
 }
+
+#[hydra::test]
+async fn a_child_whose_start_is_not_sync_starts() {
+    // A `Cell` is `Send` and not `Sync`, as a stream often is, and the start
+    // holds it across an await.
+    let child = ChildSpec::new("unsync").start(|| async {
+        let held = std::cell::Cell::new(1);
+        Process::sleep(Duration::from_millis(1)).await;
+        assert_eq!(held.get(), 1);
+        Ok(Process::spawn_link(async {
+            loop {
+                Process::sleep(Duration::from_secs(1)).await;
+            }
+        }))
+    });
+
+    let supervisor = Supervisor::with_children([child])
+        .start_link(SupervisorOptions::new())
+        .await
+        .expect("Failed to start supervisor!");
+
+    let children = Supervisor::which_children(supervisor)
+        .await
+        .expect("Failed to list children!");
+
+    assert!(children[0].child.is_some());
+}
+
+/// A server that holds a value which is `Send` and not `Sync`, as a stream
+/// often is, from before its start until its `init`.
+struct HoldsCell(std::cell::Cell<u32>);
+
+impl GenServer for HoldsCell {
+    type Message = SlowMessage;
+
+    async fn init(&mut self) -> Result<(), ExitReason> {
+        self.0.set(self.0.get() + 1);
+        Ok(())
+    }
+}
+
+#[hydra::test]
+async fn a_server_that_is_not_sync_starts_as_a_child() {
+    let child = ChildSpec::new("cell").start(|| async {
+        let server = HoldsCell(std::cell::Cell::new(1));
+        Process::sleep(Duration::from_millis(1)).await;
+        server.start_link(GenServerOptions::new()).await
+    });
+
+    let supervisor = Supervisor::with_children([child])
+        .start_link(SupervisorOptions::new())
+        .await
+        .expect("Failed to start supervisor!");
+
+    let children = Supervisor::which_children(supervisor)
+        .await
+        .expect("Failed to list children!");
+
+    assert!(children[0].child.is_some());
+}

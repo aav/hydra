@@ -33,8 +33,9 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = "0.3"
 dashmap = "6.0.1"
 
-hydra-macros = { version = "0.1.39", path = "./hydra-macros" }
-hydra = { version = "0.1.39", path = "./hydra", default-features = false }
+# The fork is published to the carvers' forge registry as 0.1.40-aav.N.
+hydra-macros = { version = "0.1.40-aav.1", path = "./hydra-macros", registry = "forge" }
+hydra = { version = "0.1.40-aav.1", path = "./hydra", default-features = false, registry = "forge" }
 
 [profile.release]
 lto = "fat"

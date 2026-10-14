@@ -24,11 +24,7 @@ pub struct ChildSpec {
     pub(crate) id: String,
     #[allow(clippy::type_complexity)]
     pub(crate) start: Option<
-        Arc<
-            dyn Fn() -> Box<dyn Future<Output = Result<Pid, ExitReason>> + Send + Sync>
-                + Send
-                + Sync,
-        >,
+        Arc<dyn Fn() -> Box<dyn Future<Output = Result<Pid, ExitReason>> + Send> + Send + Sync>,
     >,
     pub(crate) restart: Restart,
     pub(crate) shutdown: Option<Shutdown>,
@@ -61,7 +57,7 @@ impl ChildSpec {
     pub fn start<T, F>(mut self, start: T) -> Self
     where
         T: Fn() -> F + Send + Sync + 'static,
-        F: Future<Output = Result<Pid, ExitReason>> + Send + Sync + 'static,
+        F: Future<Output = Result<Pid, ExitReason>> + Send + 'static,
     {
         self.start = Some(Arc::new(move || Box::new(start())));
         self

@@ -1,7 +1,8 @@
 [package]
 name = "hydra"
-version = "0.1.40"
+version = "0.1.40-aav.1"
 edition = "2024"
+publish = ["forge"]
 readme.workspace = true
 license.workspace = true
 repository.workspace = true
